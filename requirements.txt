@@ -1,2 +1,6 @@
 yfinance==0.2.65
 python-dotenv
+tavily
+langgraph
+langchain
+decite
