@@ -1,2 +1,3 @@
 research_docs.db
 .env
+__pycache__/
