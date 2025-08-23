@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import datetime
 from typing_extensions import override
 from dacite import from_dict
 
@@ -7,6 +8,9 @@ import dacite
 import requests
 import json
 import os
+
+import sqlite3
+import ast
 
 from src_base import ResearchSource, ResearchUpdates, Asset
 
@@ -29,6 +33,25 @@ class SixtyFourResearchUpdates(ResearchUpdates):
 class SixtyFourResearchSource(ResearchSource):
     @override
     def research_asset_update(self, asset: Asset) -> SixtyFourResearchUpdates:
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        data_file_path = os.path.join(data_dir, "sixty_four_data_cached.txt")
+        # Simple: read as text; if it's a Python bytes-literal, normalize, then JSON-load
+        with open(data_file_path, "r", encoding="utf-8") as f:
+            text = f.read().strip()
+
+        if text.startswith("b'") or text.startswith('b"'):
+            bytes_value = ast.literal_eval(text)
+            text = bytes_value.decode("utf-8", errors="replace")
+
+        sixty_four_data_cached = json.loads(text)
+
+        sixty_four_data = dacite.from_dict(SixtyFourPayload,
+            data = (sixty_four_data_cached["structured_data"] | { "findings": sixty_four_data_cached["findings"] }),
+            config = dacite.Config(strict=False)
+        )
+
+        return SixtyFourResearchUpdates(sixty_four_data.NGMI, sixty_four_data)
+
         response = requests.post(
             "https://api.sixtyfour.ai/enrich-company",
             headers={
@@ -66,7 +89,7 @@ class SixtyFourResearchSource(ResearchSource):
 
     @override
     def initialized() -> bool:
-        raise True #TODO
+        return True #TODO
     
     @override
     def initialize_asset(self, asset: Asset) -> None:

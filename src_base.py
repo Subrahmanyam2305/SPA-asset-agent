@@ -10,7 +10,10 @@ class ResearchUpdates: # base class to extend
     relevance_reasoning: str
 
 class ResearchSource:
-    def research_asset_update(self, asset: Asset) -> ResearchUpdates:
+    def name(self) -> str:
+        return self.__class__.name
+
+    def research_asset_update(self, asset: Asset) -> ResearchUpdates | None:
         raise NotImplemented()
     
     def initialized() -> bool:

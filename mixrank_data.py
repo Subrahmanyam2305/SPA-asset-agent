@@ -2,15 +2,25 @@ import requests
 import os
 from dotenv import load_dotenv
 
+from src_base import Asset, ResearchSource, ResearchUpdates
+
 load_dotenv()
 
-class MixRank:
+class MixRank(ResearchSource):
     def __init__(self):
         self.api_key = os.getenv("MIXRANK_API_KEY")
         # api key is in the .env file but it is not being read in
         self.base_url = f"https://api.mixrank.com/v2/json/{self.api_key}"
 
-    def get_research_updates(self, company_name: str):
+    def research_asset_update(self, asset: Asset) -> ResearchUpdates | None:
+        updates = self.get_research_updates(asset.name)
+
+        if updates == None: return None
+        else:
+            return ResearchUpdates(relevance_reasoning=str(updates))
+
+
+    def get_research_updates(self, company_name: str) -> str | None:
         mixrank_content = ""
         endpoint = f"/companies?search={company_name}&page_size=1"
         url = self.base_url + endpoint

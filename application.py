@@ -1,12 +1,16 @@
 import os
 import json
+from queue import Queue
 import re
 import textwrap
 import dacite
 import requests
-from dataclasses import dataclass, InitVar
+from dataclasses import dataclass, InitVar, asdict
+from enum import Enum
+import concurrent.futures
+import traceback
 
-from src_base import Asset
+from src_base import Asset, ResearchSource
 
 from dotenv import load_dotenv
 
@@ -35,162 +39,82 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_tavily import TavilySearch, TavilyExtract
 
 import src_sixtyfour as sixtyfour
+import mixrank_data as mixrank
 import ast
 
-class State(TypedDict):
-    # Messages have the type "list". The `add_messages` function
-    # in the annotation defines how this state key should be updated
-    # (in this case, it appends messages to the list, rather than overwriting them)
-    messages: Annotated[list, add_messages] # type: ignore
-    lastAgent: str
+import sqlite3
+
+import agentic_pipeline
 
 load_dotenv()
 
-llm = init_chat_model("openai:gpt-5")
-llm_mini = init_chat_model("openai:gpt-5-mini")
+def load_assets(db_name: str) -> dict[str, Asset]:
+    try:
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
 
-def stream_graph_updates(graph: CompiledStateGraph[Any, Any], user_input: str):
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
-        for value in event.values():
-            print("\nAssistant:", value["messages"][-1].content)
+            cursor.execute("""
+                SELECT DISTINCT asset_name
+                FROM research_docs
+            """)
+            
+            assets = []
+            rows = cursor.fetchall()
+            for row in rows:
+                asset_name = row[0]
+                assets.append(Asset(asset_name, None))
+            return assets
+    except sqlite3.Error as e:
+        print(f"Error initializing asset {asset_name}: {e}")
+        raise
 
-def withSystemMessage(state: MessagesState, msg: SystemMessage) -> MessagesState:
-    messages = state["messages"]
-    if len(messages) == 0 or not isinstance(messages[0], SystemMessage):
-        messages.insert(0, msg)
-    else:
-        messages[0] = msg
-    return state
+def load_sources() -> list[ResearchSource]:
+    return [
+        sixtyfour.SixtyFourResearchSource(),
+        mixrank.MixRank(),
+    ]
 
-def addToolEdge(graph_builder: StateGraph[Any, Any, Any, Any], source: str, tools: str, destination: str) -> StateGraph[Any, Any, Any, Any]:
-    return graph_builder.add_conditional_edges(
-        source,
-        tools_condition,
-        {"tools": tools, END: destination},
-    )
+def get_thread_pool(n: int):
+    return concurrent.futures.ThreadPoolExecutor(max_workers=n)
 
-tool_search = TavilySearch(max_results=10)
-tool_extract = TavilyExtract()
-
-tools_research = [tool_search]
-tools_deep_research = [tool_search, tool_extract]
-
-# Modification: tell the LLM which tools it can call
-llm_research = llm_mini.bind_tools(tools_research)
-llm_deep_research = llm_mini.bind_tools(tools_deep_research)
-
-@dataclass
-class RiskAssessorOutput:
-    risk_level: str
-    confidence: int
-    reasoning: str
-
-llm_risk_assessor = llm_deep_research.with_structured_output(RiskAssessorOutput)
-
-def risk_assessor(asset: Asset, state: State):
-    print("\nAgent: Risk Assessor\n")
-
-    risk_assessor_system_message: SystemMessage = SystemMessage(
-    textwrap.dedent("""You are an investment system's asset early warning risk assessor. Your job is to analyze incoming data to detect weak signals that may require special attention.
-
-        Rules:
-        - If you see potential for risk, but you don't have enough data, call search and extract to get more information
-        - Call at most THREE tools per turn
-        - Do not call the same tool with the same input twice
-        - Stop when you believe you have enough signal or after 5 tool calls max
-        """))
-
-    stateDelta = {"messages": []}
-
-    stateDelta["lastAgent"] = "risk_assessor"
-    stateDelta["messages"].append(
-        AIMessage(json.dumps(llm_risk_assessor.invoke(
-            [risk_assessor_system_message] + state["messages"]
-        )))
-    )
-
-    return stateDelta
-
-@dataclass
-class ReporterOutput:
-    report: str
-    sources: list[str]
-
-llm_reporter = llm.with_structured_output(ReporterOutput)
-
-def reporter(state: State):
-    print("\nAgent: Reporter\n")
-
-    risk_assessor_system_message: SystemMessage = SystemMessage(
-    textwrap.dedent("""You are a report generating agent. Your task is to synthesize insights collected by risk assessor into a detailed report in MD format.
-
-        Rules:
-        - Format your output in MD in report field, cite sources and put them to sources list
-        """))
-
-    stateDelta = {"messages": []}
-
-    stateDelta["lastAgent"] = "reporter"
-    stateDelta["messages"].append(
-        AIMessage(json.dumps(llm_risk_assessor.invoke(
-            [risk_assessor_system_message] + state["messages"]
-        )))
-    )
-
-    return stateDelta
-
-pipelines: dict[str, CompiledStateGraph] = {}
-
-def build_pipeline(asset: Asset):
-    if asset.name in pipelines:
-        return pipelines[asset.name]
-
-    graph_builder = StateGraph(State)
-
-    graph_builder.add_node("risk-assessor", partial(risk_assessor, "Digital Realty"))
-    graph_builder.add_node("reporter", reporter)
-
-    deep_research_tool_node = ToolNode(tools=[tool_search, tool_extract])
-    graph_builder.add_node("tools-risk-assessor", deep_research_tool_node)
-
-    graph_builder.add_edge(START, "risk-assessor")
-
-    addToolEdge(graph_builder, "risk-assessor", "tools-risk-assessor", "reporter")
-    graph_builder.add_edge("tools-risk-assessor", "risk-assessor")
-
-    graph_builder.add_edge("reporter", END)
-
-    graph = graph_builder.compile()
-
-    return graph
-
-if __name__ == "__main__":
-    asset = Asset("Digital Realty", None)
-
-    graph = build_pipeline(Asset("Digital Realty", None))
+def process_asset(asset: Asset, sources: list[ResearchSource]):
+    graph = agentic_pipeline.build_pipeline(asset)
     sixty_four = sixtyfour.SixtyFourResearchSource()
 
+    for source in sources:
+        try:
+            print(f"Processing source: {source.name}")
 
-    # sixty_four_data = sixty_four.research_asset_update(asset)
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
-    data_file_path = os.path.join(data_dir, "sixty_four_data_cached.txt")
-    # Simple: read as text; if it's a Python bytes-literal, normalize, then JSON-load
-    with open(data_file_path, "r", encoding="utf-8") as f:
-        text = f.read().strip()
+            insight = source.research_asset_update(asset)
 
-    if text.startswith("b'") or text.startswith('b"'):
-        bytes_value = ast.literal_eval(text)
-        text = bytes_value.decode("utf-8", errors="replace")
+            user_input = (
+                f"Please analyze the following data set from {source.name} to assess for potential risks for the asset {asset.name}.\n\n"
+                f"{(json.dumps(asdict(insight)))}"
+            )
+            
+            result_str: str = agentic_pipeline.stream_graph_updates(graph, user_input)
+            result = dacite.from_dict(agentic_pipeline.ReporterOutput, json.loads(result_str),
+                dacite.Config(strict=False, type_hooks={
+                    agentic_pipeline.RiskLevel: lambda v: v if isinstance(v, agentic_pipeline.RiskLevel) else agentic_pipeline.RiskLevel(v)
+                }))
+            print("\n\n\n\n")
+            pprint(result)
+        except Exception as e:
+            traceback.print_exc()
+    
+if __name__ == "__main__":
+    assets = load_assets("research_docs.db")
+    sources = load_sources()
 
-    sixty_four_data_cached = json.loads(text)
+    assets = [Asset("Digital Realty", None)]
+    
+    assets_queue: Queue[Asset] = Queue()
+    for a in assets: assets_queue.put(a)
 
-    sixty_four_data = dacite.from_dict(sixtyfour.SixtyFourPayload,
-        data = (sixty_four_data_cached["structured_data"] | { "findings": sixty_four_data_cached["findings"] }),
-        config = dacite.Config(strict=False)
-    )
+    pool = get_thread_pool(5)
+    futures = []
 
-    user_input = (
-        "Please analyze the following data set from SixtyFour to assess for potential risks for the asset Digital Realty.\n\n"
-        f"{sixty_four_data}"
-    )
-    stream_graph_updates(graph, user_input)
+    for a in assets:
+        futures.append(pool.submit(lambda: process_asset(a, sources)))
+    
+    concurrent.futures.wait(futures)
