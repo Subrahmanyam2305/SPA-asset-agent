@@ -1,4 +1,4 @@
-import yfinance as yf
+import yfinance
 import json
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -48,7 +48,7 @@ class YFinance:
 
         try:
             # Get ticker information
-            ticker = yf.Ticker(ticker_symbol)
+            ticker = yfinance.Ticker(ticker_symbol)
             
             # Collect relevant information
             research_data = {
@@ -83,10 +83,10 @@ class YFinance:
                 if news:
                     research_data["news"] = [
                         {
-                            "title": item.get("title"),
-                            "publisher": item.get("publisher"),
-                            "link": item.get("link"),
-                            "published": datetime.fromtimestamp(item.get("providerPublishTime", 0)).isoformat()
+                            "title": item['content'].get("title"),
+                            "summary": item['content'].get("summary"),
+                            "description": item['content'].get("description"),
+                            "published": item['content'].get("pubDate")
                         }
                         for item in news[:5]  # Get latest 5 news items
                     ]
@@ -100,10 +100,12 @@ class YFinance:
                     recent_recommendations = recommendations.tail(5)  # Get latest 5 recommendations
                     research_data["analyst_recommendations"] = [
                         {
-                            "firm": row.get("Firm"),
-                            "to_grade": row.get("To Grade"),
-                            "action": row.get("Action"),
-                            "date": row.name.isoformat()
+                            "period": row.get("period"),
+                            "strongBuy": row.get("strongBuy"),
+                            "buy": row.get("buy"),
+                            "hold": row.get("hold"),
+                            "sell": row.get("sell"),
+                            "strongSell": row.get("strongSell")
                         }
                         for _, row in recent_recommendations.iterrows()
                     ]
