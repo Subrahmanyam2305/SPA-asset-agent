@@ -1,11 +1,14 @@
+import operator
 import os
 import json
 import re
 import textwrap
+from uuid import UUID
 import dacite
 import requests
 from dataclasses import dataclass, InitVar
 from enum import Enum
+from langgraph.checkpoint.memory import InMemorySaver
 
 from src_base import Asset
 
@@ -44,18 +47,23 @@ class State(TypedDict):
     # (in this case, it appends messages to the list, rather than overwriting them)
     messages: Annotated[list, add_messages] # type: ignore
     lastAgent: str
+    assessments: Annotated[list[str], operator.add]
+    do_report: bool = False
 
 load_dotenv()
 
 llm = init_chat_model("openai:gpt-5-nano")
 llm_mini = init_chat_model("openai:gpt-5-nano")
 
-def stream_graph_updates(graph: CompiledStateGraph[Any, Any], user_input: str):
+def assessor_router(state: State) -> str:
+    return "reporter" if ("do_report" in state and state["do_report"]) else "risk-assessor"
+
+def stream_graph_updates(graph: CompiledStateGraph[Any, Any], user_input: str, config: dict | None = None, output: bool = True):
     last_event = None
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
+    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}, config=config or {}):
         for value in event.values():
-            last_event = value["messages"][-1].content
-            print("\nAssistant:", last_event)
+            last_event = value["messages"][-1]["content"]
+            if output: print("\nAssistant:", last_event)
     return last_event
 
 def withSystemMessage(state: MessagesState, msg: SystemMessage) -> MessagesState:
@@ -115,11 +123,14 @@ def risk_assessor(asset: Asset, state: State):
     stateDelta = {"messages": []}
 
     stateDelta["lastAgent"] = "risk_assessor"
-    stateDelta["messages"].append(
-        AIMessage(json.dumps(llm_risk_assessor.invoke(
+
+    out = llm_risk_assessor.invoke(
             [risk_assessor_system_message] + state["messages"]
-        )))
-    )
+        )
+
+    stateDelta["messages"] = [{"role": "assistant", "content": json.dumps(out)}]
+
+    stateDelta["assessments"] = [out]
 
     return stateDelta
 
@@ -146,9 +157,10 @@ def reporter(state: State):
 
     stateDelta["lastAgent"] = "reporter"
     stateDelta["messages"].append(
-        AIMessage(json.dumps(llm_reporter.invoke(
-            [risk_reporter_system_message] + state["messages"]
-        )))
+        json.dumps(llm_reporter.invoke(
+            [risk_reporter_system_message] + state["messages"] + 
+            [ { "role": "assistant", "content": json.dumps(state["assessments"]) } ]
+        ))
     )
 
     return stateDelta
@@ -161,19 +173,24 @@ def build_pipeline(asset: Asset):
 
     graph_builder = StateGraph(State)
 
-    graph_builder.add_node("risk-assessor", partial(risk_assessor, "Digital Realty"))
+    graph_builder.add_node("risk-assessor", partial(risk_assessor, asset.name))
     graph_builder.add_node("reporter", reporter)
 
     deep_research_tool_node = ToolNode(tools=[tool_search, tool_extract])
     graph_builder.add_node("tools-risk-assessor", deep_research_tool_node)
 
-    graph_builder.add_edge(START, "risk-assessor")
+    graph_builder.add_conditional_edges(START, assessor_router, {
+        "risk-assessor": "risk-assessor",
+        "reporter": "reporter"
+    })
 
-    addToolEdge(graph_builder, "risk-assessor", "tools-risk-assessor", "reporter")
+    addToolEdge(graph_builder, "risk-assessor", "tools-risk-assessor", END)
     graph_builder.add_edge("tools-risk-assessor", "risk-assessor")
 
     graph_builder.add_edge("reporter", END)
 
-    graph = graph_builder.compile()
+    memory = InMemorySaver()
+
+    graph = graph_builder.compile(checkpointer=memory)
 
     return graph

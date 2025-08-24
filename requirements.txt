@@ -4,3 +4,5 @@ tavily
 langgraph
 langchain
 decite
+fastapi
+uvicorn

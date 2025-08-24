@@ -11,7 +11,7 @@ class ResearchUpdates: # base class to extend
 
 class ResearchSource:
     def name(self) -> str:
-        return self.__class__.name
+        return self.__class__.__name__
 
     def research_asset_update(self, asset: Asset) -> ResearchUpdates | None:
         raise NotImplemented()

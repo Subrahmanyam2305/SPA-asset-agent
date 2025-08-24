@@ -179,7 +179,7 @@ class ResearchDocs:
 if __name__ == "__main__":
     research_docs = ResearchDocs()
     # Example usage
-    asset_companies = ["openai", "google", "microsoft", "amazon", "facebook", "apple", "tesla", "nvidia", "amd", "intel"]
+    asset_companies = ["openai", "google", "microsoft", "amazon", "facebook", "apple", "tesla", "nvidia", "amd", "intel", "digital realty", "equinix"]
     for company in asset_companies:
         mixrank_content = MixRank().get_research_updates(company_name=company)
         yfinance_content = YFinance().get_research_updates(company)

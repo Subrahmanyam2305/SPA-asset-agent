@@ -19,16 +19,15 @@ class MixRank(ResearchSource):
         else:
             return ResearchUpdates(relevance_reasoning=str(updates))
 
-
     def get_research_updates(self, company_name: str) -> str | None:
         mixrank_content = ""
         endpoint = f"/companies?search={company_name}&page_size=1"
         url = self.base_url + endpoint
-        print(url)
+        # print(url)
         response = requests.get(url)
         if response.status_code == 200:
             data = response.json()
-            print(data)
+            # print(data)
             id = data['results'][0]['id']
             mixrank_content += f"Company name: {data['results'][0]['name']}\n"
             mixrank_content += f"Number of current employees at this company: {data['results'][0]['employees']}\n"

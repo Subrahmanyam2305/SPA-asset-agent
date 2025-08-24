@@ -1,8 +1,9 @@
 import os
 import json
-from queue import Queue
+from queue import Empty, Queue
 import re
 import textwrap
+from uuid import UUID
 import dacite
 import requests
 from dataclasses import dataclass, InitVar, asdict
@@ -10,7 +11,8 @@ from enum import Enum
 import concurrent.futures
 import traceback
 
-from src_base import Asset, ResearchSource
+import init
+from src_base import Asset, ResearchSource, ResearchUpdates
 
 from dotenv import load_dotenv
 
@@ -77,44 +79,90 @@ def load_sources() -> list[ResearchSource]:
 def get_thread_pool(n: int):
     return concurrent.futures.ThreadPoolExecutor(max_workers=n)
 
-def process_asset(asset: Asset, sources: list[ResearchSource]):
-    graph = agentic_pipeline.build_pipeline(asset)
-    sixty_four = sixtyfour.SixtyFourResearchSource()
+def process_asset(asset: Asset, sources: list[ResearchSource], results_out: Queue[(Asset, list[ResearchUpdates])]) -> list[agentic_pipeline.ReporterOutput]:
+    try:
+        graph = agentic_pipeline.build_pipeline(asset)
 
-    for source in sources:
-        try:
-            print(f"Processing source: {source.name}")
+        results = []
+        for source in sources:
+            try:
+                print(f"Processing source: {source.name()} for asset {asset.name}")
 
-            insight = source.research_asset_update(asset)
+                insight = source.research_asset_update(asset)
 
-            user_input = (
-                f"Please analyze the following data set from {source.name} to assess for potential risks for the asset {asset.name}.\n\n"
-                f"{(json.dumps(asdict(insight)))}"
-            )
-            
-            result_str: str = agentic_pipeline.stream_graph_updates(graph, user_input)
-            result = dacite.from_dict(agentic_pipeline.ReporterOutput, json.loads(result_str),
-                dacite.Config(strict=False, type_hooks={
-                    agentic_pipeline.RiskLevel: lambda v: v if isinstance(v, agentic_pipeline.RiskLevel) else agentic_pipeline.RiskLevel(v)
-                }))
-            print("\n\n\n\n")
-            pprint(result)
-        except Exception as e:
-            traceback.print_exc()
+                user_input = (
+                    f"Please analyze the following data set from {source.name} to assess for potential risks for the asset {asset.name}.\n\n"
+                    f"{(json.dumps(asdict(insight)))}"
+                )
+                
+                result_str: str = agentic_pipeline.stream_graph_updates(graph, user_input, config={"configurable": {"thread_id": asset.name}}, output=False)
+
+                # data = json.loads(result_str)
+                # if isinstance(data.get("sources"), str):
+                #     import re
+                #     data["sources"] = [s.strip() for s in re.split(r"[,\n]+", data["sources"]) if s.strip()]
+
+                # result = dacite.from_dict(agentic_pipeline.ReporterOutput, data,
+                #     dacite.Config(strict=False, type_hooks={
+                #         agentic_pipeline.RiskLevel: lambda v: v if isinstance(v, agentic_pipeline.RiskLevel) else agentic_pipeline.RiskLevel(v)
+                #     }))
+                #results.append(result)
+            except Exception as e:
+                traceback.print_exc()
     
-if __name__ == "__main__":
-    assets = load_assets("research_docs.db")
-    sources = load_sources()
+        data = graph.invoke({"do_report": True}, {"configurable": {"thread_id": asset.name}})
 
-    assets = [Asset("Digital Realty", None)]
-    
-    assets_queue: Queue[Asset] = Queue()
-    for a in assets: assets_queue.put(a)
+        if isinstance(data.get("sources"), str):
+            import re
+            data["sources"] = [s.strip() for s in re.split(r"[,\n]+", data["sources"]) if s.strip()]
 
-    pool = get_thread_pool(5)
+        result = dacite.from_dict(agentic_pipeline.ReporterOutput, json.loads(data["messages"][-1].content),
+                    dacite.Config(strict=False, type_hooks={
+                        agentic_pipeline.RiskLevel: lambda v: v if isinstance(v, agentic_pipeline.RiskLevel) else agentic_pipeline.RiskLevel(v)
+                    }))
+
+        results.append(result)
+    except Exception as e:
+        traceback.print_exc()
+
+    results_out.put((asset, results))
+
+def save_report(db_name: str, asset: Asset, report: agentic_pipeline.ReporterOutput):
+    try:
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO research_reports (asset_name, report)
+                VALUES (?, ?)
+                ON CONFLICT(asset_name) DO UPDATE SET report=excluded.report
+            """, (asset.name, report.report))
+            conn.commit()
+    except sqlite3.Error as e:
+        print(f"Error saving report for {asset.name}: {e}")
+        raise
+
+worker_pool = get_thread_pool(5)
+
+def run_update(db_name: str, assets = None, sources = None):
+    if assets == None: assets = load_assets(db_name)
+    if sources == None: sources = load_sources()
+
+    # assets = assets[0:1]
+    # sourceds = sources[0:1]
+
+    results: Queue[(Asset, list[ResearchUpdates])] = Queue()
     futures = []
 
     for a in assets:
-        futures.append(pool.submit(lambda: process_asset(a, sources)))
+        futures.append(worker_pool.submit(lambda: process_asset(a, sources, results)))
     
     concurrent.futures.wait(futures)
+    try:
+        while (it := results.get_nowait()) is not None:
+            pprint(it)
+    except Empty:
+        pass
+    
+if __name__ == "__main__":
+    init.init_db("research_docs.db")
+    run_update("research_docs.db")
