@@ -1,8 +1,8 @@
 yfinance==0.2.65
 python-dotenv
-tavily
+langchain-tavily
 langgraph
 langchain
-decite
+dacite
 fastapi
 uvicorn

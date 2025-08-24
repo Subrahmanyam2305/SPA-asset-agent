@@ -30,7 +30,8 @@ from langchain_core.messages import ToolMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.graph.message import add_messages
 from langchain.chat_models import init_chat_model
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt.tool_node import ToolNode
+from langgraph.prebuilt.tool_node import tools_condition
 from langgraph.types import Send
 from langgraph.graph.state import StateGraph, CompiledStateGraph
 
@@ -58,7 +59,7 @@ llm_mini = init_chat_model("openai:gpt-5-nano")
 def assessor_router(state: State) -> str:
     return "reporter" if ("do_report" in state and state["do_report"]) else "risk-assessor"
 
-def stream_graph_updates(graph: CompiledStateGraph[Any, Any], user_input: str, config: dict | None = None, output: bool = True):
+def stream_graph_updates(graph: CompiledStateGraph, user_input: str, config: dict | None = None, output: bool = True):
     last_event = None
     for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}, config=config or {}):
         for value in event.values():
@@ -74,7 +75,7 @@ def withSystemMessage(state: MessagesState, msg: SystemMessage) -> MessagesState
         messages[0] = msg
     return state
 
-def addToolEdge(graph_builder: StateGraph[Any, Any, Any, Any], source: str, tools: str, destination: str) -> StateGraph[Any, Any, Any, Any]:
+def addToolEdge(graph_builder: StateGraph, source: str, tools: str, destination: str) -> StateGraph:
     return graph_builder.add_conditional_edges(
         source,
         tools_condition,

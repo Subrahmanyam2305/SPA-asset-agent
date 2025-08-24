@@ -2,8 +2,17 @@ import yfinance
 import json
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
+from dataclasses import dataclass
+from src_base import ResearchSource, ResearchUpdates, Asset
 
-class YFinance:
+@dataclass
+class YFinanceResearchUpdates(ResearchUpdates):
+    company_info: dict
+    news: list
+    analyst_recommendations: list
+    ticker: str
+
+class YFinance(ResearchSource):
     def __init__(self):
         """Initialize the YFinance class with company to ticker mapping."""
         self.company_tickers = {
@@ -31,18 +40,28 @@ class YFinance:
         """
         return self.company_tickers.get(company_name.lower())
 
-    def get_research_updates(self, company_name: str) -> Optional[str]:
+    def name(self) -> str:
+        return "YFinance"
+
+    def initialized(self) -> bool:
+        return True  # No initialization needed
+
+    def initialize_asset(self, asset: Asset) -> None:
+        # No initialization needed
+        pass
+
+    def research_asset_update(self, asset: Asset) -> YFinanceResearchUpdates | None:
         """
         Get research updates for a company using yfinance.
         
         Args:
-            company_name (str): Name of the company
+            asset (Asset): Asset to research
             
         Returns:
-            Optional[str]: JSON string containing research data if available,
-                         None if company doesn't have a ticker
+            YFinanceResearchUpdates | None: Research updates if available,
+                                          None if company doesn't have a ticker
         """
-        ticker_symbol = self._get_ticker(company_name)
+        ticker_symbol = self._get_ticker(asset.name)
         if not ticker_symbol:
             return None
 
@@ -50,20 +69,10 @@ class YFinance:
             # Get ticker information
             ticker = yfinance.Ticker(ticker_symbol)
             
-            # Collect relevant information
-            research_data = {
-                "company_name": company_name,
-                "ticker": ticker_symbol,
-                "info": {},
-                "news": [],
-                "analyst_recommendations": [],
-                "timestamp": datetime.now().isoformat()
-            }
-
             # Basic company information
             try:
                 info = ticker.info
-                research_data["info"] = {
+                company_info = {
                     "sector": info.get("sector"),
                     "industry": info.get("industry"),
                     "market_cap": info.get("marketCap"),
@@ -75,13 +84,14 @@ class YFinance:
                     "business_summary": info.get("longBusinessSummary")
                 }
             except Exception as e:
-                research_data["info"] = {"error": f"Failed to fetch company info: {str(e)}"}
+                company_info = {"error": f"Failed to fetch company info: {str(e)}"}
 
             # Recent news
+            news_items = []
             try:
                 news = ticker.news
                 if news:
-                    research_data["news"] = [
+                    news_items = [
                         {
                             "title": item['content'].get("title"),
                             "summary": item['content'].get("summary"),
@@ -91,14 +101,15 @@ class YFinance:
                         for item in news[:5]  # Get latest 5 news items
                     ]
             except Exception as e:
-                research_data["news"] = [{"error": f"Failed to fetch news: {str(e)}"}]
+                news_items = [{"error": f"Failed to fetch news: {str(e)}"}]
 
             # Analyst recommendations
+            analyst_recs = []
             try:
                 recommendations = ticker.recommendations
                 if not recommendations.empty:
                     recent_recommendations = recommendations.tail(5)  # Get latest 5 recommendations
-                    research_data["analyst_recommendations"] = [
+                    analyst_recs = [
                         {
                             "period": row.get("period"),
                             "strongBuy": row.get("strongBuy"),
@@ -110,15 +121,27 @@ class YFinance:
                         for _, row in recent_recommendations.iterrows()
                     ]
             except Exception as e:
-                research_data["analyst_recommendations"] = [{"error": f"Failed to fetch recommendations: {str(e)}"}]
+                analyst_recs = [{"error": f"Failed to fetch recommendations: {str(e)}"}]
 
-            return json.dumps(research_data, indent=2)
+            # Create relevance reasoning
+            relevance = (
+                f"Financial market data for {asset.name} ({ticker_symbol}). "
+                f"Includes company information, recent news, and analyst recommendations. "
+                f"Market cap: {company_info.get('market_cap', 'N/A')}, "
+                f"Industry: {company_info.get('industry', 'N/A')}"
+            )
+
+            return YFinanceResearchUpdates(
+                relevance_reasoning=relevance,
+                company_info=company_info,
+                news=news_items,
+                analyst_recommendations=analyst_recs,
+                ticker=ticker_symbol
+            )
 
         except Exception as e:
-            return json.dumps({
-                "error": f"Failed to fetch data for {company_name} ({ticker_symbol}): {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            })
+            # Return None on error to indicate no data available
+            return None
 
 
 if __name__ == "__main__":

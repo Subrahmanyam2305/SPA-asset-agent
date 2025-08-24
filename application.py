@@ -42,6 +42,8 @@ from langchain_tavily import TavilySearch, TavilyExtract
 
 import src_sixtyfour as sixtyfour
 import mixrank_data as mixrank
+import yfinance_data as yfinance
+import graph_research as graph
 import ast
 
 import sqlite3
@@ -74,6 +76,8 @@ def load_sources() -> list[ResearchSource]:
     return [
         sixtyfour.SixtyFourResearchSource(),
         mixrank.MixRank(),
+        yfinance.YFinance(),
+        graph.GraphResearchSource(),
     ]
 
 def get_thread_pool(n: int):
