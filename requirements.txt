@@ -6,3 +6,4 @@ langchain
 decite
 fastapi
 uvicorn
+pyngrok

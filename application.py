@@ -111,12 +111,15 @@ def process_asset(asset: Asset, sources: list[ResearchSource], results_out: Queu
                 traceback.print_exc()
     
         data = graph.invoke({"do_report": True}, {"configurable": {"thread_id": asset.name}})
+        data_input = data["messages"][-1].content
 
-        if isinstance(data.get("sources"), str):
-            import re
-            data["sources"] = [s.strip() for s in re.split(r"[,\n]+", data["sources"]) if s.strip()]
+        # if isinstance(data_input.get("sources"), str):
+        #     import re
+        #     data["sources"] = [s.strip() for s in re.split(r"[,\n]+", data["sources"]) if s.strip()]
 
-        result = dacite.from_dict(agentic_pipeline.ReporterOutput, json.loads(data["messages"][-1].content),
+        pprint(data_input)        
+
+        result = dacite.from_dict(agentic_pipeline.ReporterOutput, json.loads(data_input),
                     dacite.Config(strict=False, type_hooks={
                         agentic_pipeline.RiskLevel: lambda v: v if isinstance(v, agentic_pipeline.RiskLevel) else agentic_pipeline.RiskLevel(v)
                     }))
@@ -131,12 +134,27 @@ def save_report(db_name: str, asset: Asset, report: agentic_pipeline.ReporterOut
     try:
         with sqlite3.connect(db_name) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO research_reports (asset_name, report)
-                VALUES (?, ?)
-                ON CONFLICT(asset_name) DO UPDATE SET report=excluded.report
-            """, (asset.name, report.report))
+            risk_level_str = (
+                report.risk_level.value if hasattr(report.risk_level, "value") else str(report.risk_level)
+            )
+            try:
+                cursor.execute("""
+                    INSERT INTO research_reports (asset_name, report, risk_level)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(asset_name) DO UPDATE SET report=excluded.report, risk_level=excluded.risk_level
+                """, (asset.name, report.report, risk_level_str))
+            except sqlite3.OperationalError as op_err:
+                if "has no column named risk_level" in str(op_err) or "no such column: risk_level" in str(op_err):
+                    cursor.execute("ALTER TABLE research_reports ADD COLUMN risk_level TEXT")
+                    cursor.execute("""
+                        INSERT INTO research_reports (asset_name, report, risk_level)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(asset_name) DO UPDATE SET report=excluded.report, risk_level=excluded.risk_level
+                    """, (asset.name, report.report, risk_level_str))
+                else:
+                    raise
             conn.commit()
+        print(f"Saved report for {asset.name} (risk={risk_level_str})")
     except sqlite3.Error as e:
         print(f"Error saving report for {asset.name}: {e}")
         raise
@@ -154,12 +172,15 @@ def run_update(db_name: str, assets = None, sources = None):
     futures = []
 
     for a in assets:
-        futures.append(worker_pool.submit(lambda: process_asset(a, sources, results)))
+        # Avoid late-binding in lambda; submit with explicit args
+        futures.append(worker_pool.submit(process_asset, a, sources, results))
     
     concurrent.futures.wait(futures)
     try:
-        while (it := results.get_nowait()) is not None:
-            pprint(it)
+        while True:
+            asset, reports = results.get_nowait()
+            for report in reports:
+                save_report(db_name, asset, report)
     except Empty:
         pass
     

@@ -23,6 +23,7 @@ def create_tables(db_path: str) -> None:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS research_reports (
                     asset_name TEXT PRIMARY KEY,
+                    risk_level VARCHAR,
                     report TEXT
                 )
             """)

@@ -52,8 +52,8 @@ class State(TypedDict):
 
 load_dotenv()
 
-llm = init_chat_model("openai:gpt-5-nano")
-llm_mini = init_chat_model("openai:gpt-5-nano")
+llm = init_chat_model("openai:gpt-5")
+llm_mini = init_chat_model("openai:gpt-5-mini")
 
 def assessor_router(state: State) -> str:
     return "reporter" if ("do_report" in state and state["do_report"]) else "risk-assessor"
@@ -168,9 +168,6 @@ def reporter(state: State):
 pipelines: dict[str, CompiledStateGraph] = {}
 
 def build_pipeline(asset: Asset):
-    if asset.name in pipelines:
-        return pipelines[asset.name]
-
     graph_builder = StateGraph(State)
 
     graph_builder.add_node("risk-assessor", partial(risk_assessor, asset.name))
