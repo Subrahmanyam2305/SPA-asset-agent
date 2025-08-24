@@ -1,3 +1,5 @@
 research_docs.db
 .env
 __pycache__/
+best_model.pt
+latest_recommendations.json
